@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.stream.Collectors;
 
 @RestController
@@ -25,9 +27,10 @@ public class PedidoController {
     @Autowired
     private WebClient.Builder webClientBuilder;
 
-    // Generar la orden de compra
+    // Generar la orden de compra y mandar a cobrar
     @PostMapping
     public ResponseEntity<PedidoResponseDTO> crearPedido(@Valid @RequestBody PedidoRequestDTO dto) {
+        // 1. Creamos y guardamos el pedido localmente
         Pedido pedido = new Pedido();
         pedido.setClienteId(dto.getClienteId());
         pedido.setMontoTotal(dto.getMontoTotal());
@@ -35,6 +38,29 @@ public class PedidoController {
         pedido.setEstado(EstadoPedido.ESPERANDO_PAGO); 
         
         Pedido guardado = pedidoRepository.save(pedido);
+
+        // 2. CONEXIÓN AUTOMÁTICA CON MICROSERVICIO DE PAGOS
+        try {
+            // Preparamos los datos mínimos que Pagos necesita saber
+            Map<String, Object> pagoRequest = new HashMap<>();
+            pagoRequest.put("pedidoId", guardado.getId());
+            pagoRequest.put("montoTotal", guardado.getMontoTotal());
+
+            // Enviamos la petición POST al servicio de Pagos
+            // NOTA: Si usas Eureka/Naming Server, cambia "localhost:8085" por "pago-service" (o como se llame tu MS)
+            webClientBuilder.build().post()
+                    .uri("http://localhost:8088/api/pagos") 
+                    .bodyValue(pagoRequest)
+                    .retrieve()
+                    .bodyToMono(Void.class)
+                    .block(); // Espera a que la llamada se complete
+
+            System.out.println("💳 [CONEXIÓN] Pedido ID " + guardado.getId() + " enviado exitosamente a MS Pagos.");
+            
+        } catch (Exception e) {
+            System.out.println("❌ [ERROR] No se pudo enviar el cobro a Pagos: " + e.getMessage());
+        }
+        
         return new ResponseEntity<>(convertirADto(guardado), HttpStatus.CREATED);
     }
 
