@@ -12,9 +12,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.time.LocalDate; // NUEVO IMPORT PARA LAS FECHAS DE ELI
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.stream.Collectors;
 
 @RestController
@@ -27,7 +28,7 @@ public class PedidoController {
     @Autowired
     private WebClient.Builder webClientBuilder;
 
-    // Generar la orden de compra y mandar a cobrar
+    // Generar la orden de compra, cobrar y despachar
     @PostMapping
     public ResponseEntity<PedidoResponseDTO> crearPedido(@Valid @RequestBody PedidoRequestDTO dto) {
         // 1. Creamos y guardamos el pedido localmente
@@ -40,25 +41,54 @@ public class PedidoController {
         Pedido guardado = pedidoRepository.save(pedido);
 
         // 2. CONEXIÓN AUTOMÁTICA CON MICROSERVICIO DE PAGOS
+        boolean pagoExitoso = false;
         try {
-            // Preparamos los datos mínimos que Pagos necesita saber
             Map<String, Object> pagoRequest = new HashMap<>();
             pagoRequest.put("pedidoId", guardado.getId());
-            pagoRequest.put("montoTotal", guardado.getMontoTotal());
+            pagoRequest.put("monto", guardado.getMontoTotal()); 
+            pagoRequest.put("metodo", "TARJETA"); 
 
-            // Enviamos la petición POST al servicio de Pagos
-            // NOTA: Si usas Eureka/Naming Server, cambia "localhost:8085" por "pago-service" (o como se llame tu MS)
             webClientBuilder.build().post()
-                    .uri("http://localhost:8088/api/pagos") 
+                    .uri("http://localhost:8088/api/pagos/procesar")
                     .bodyValue(pagoRequest)
                     .retrieve()
                     .bodyToMono(Void.class)
-                    .block(); // Espera a que la llamada se complete
+                    .block();
 
             System.out.println("💳 [CONEXIÓN] Pedido ID " + guardado.getId() + " enviado exitosamente a MS Pagos.");
+            pagoExitoso = true; // El pago pasó, podemos despachar
             
         } catch (Exception e) {
             System.out.println("❌ [ERROR] No se pudo enviar el cobro a Pagos: " + e.getMessage());
+        }
+
+        // 3. CONEXIÓN AUTOMÁTICA CON MICROSERVICIO DE DELIVERY (Solo si se pagó)
+        if (pagoExitoso) {
+            try {
+                // Armamos los datos EXACTOS que Eli pide en su CreateRequestDelivery record
+                Map<String, Object> deliveryRequest = new HashMap<>();
+                deliveryRequest.put("pedidoId", guardado.getId().intValue()); // Convertimos a Integer por si acaso
+                deliveryRequest.put("nombreRepartidor", "Por Asignar");
+                deliveryRequest.put("direccionEntrega", guardado.getDireccionEnvio());
+                deliveryRequest.put("fechaDespacho", LocalDate.now().toString()); // ISO-8601 String que Jackson entiende perfecto
+                deliveryRequest.put("fechaEntrega", LocalDate.now().plusDays(1).toString());
+
+                webClientBuilder.build().post()
+                        .uri("http://localhost:8084/api/v1/delivery")
+                        .bodyValue(deliveryRequest)
+                        .retrieve()
+                        .bodyToMono(Void.class)
+                        .block();
+
+                System.out.println("🚚 [CONEXIÓN] Pedido ID " + guardado.getId() + " enviado a MS Delivery para despacho.");
+                
+                // Actualizamos el estado de nuestro pedido a PAGADO ya que todo salió bien
+                guardado.setEstado(EstadoPedido.PAGADO);
+                pedidoRepository.save(guardado);
+                
+            } catch (Exception e) {
+                System.out.println("❌ [ERROR] No se pudo notificar a MS Delivery: " + e.getMessage());
+            }
         }
         
         return new ResponseEntity<>(convertirADto(guardado), HttpStatus.CREATED);
