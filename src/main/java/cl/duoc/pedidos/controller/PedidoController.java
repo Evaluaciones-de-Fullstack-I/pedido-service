@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import cl.duoc.pedidos.dto.CarritoDTO;
 
 @RestController
 @RequestMapping("/api/pedidos")
@@ -31,10 +32,30 @@ public class PedidoController {
     // Generar la orden de compra, cobrar y despachar
     @PostMapping
     public ResponseEntity<PedidoResponseDTO> crearPedido(@Valid @RequestBody PedidoRequestDTO dto) {
+        
+     List<CarritoDTO> carrito = webClientBuilder.build().get()
+        .uri("http://localhost:8086/api/v1/carritos/cliente/" + dto.getClienteId())
+        .retrieve()
+        .bodyToFlux(CarritoDTO.class)
+        .collectList()
+        .block();
+System.out.println("🛒 Carrito obtenido: " + carrito.size() + " productos");
+
+if (carrito == null || carrito.isEmpty()) {
+   
+    throw new RuntimeException("El carrito está vacío");
+}
+System.out.println("✔ Carrito válido con " + carrito.size() + " productos");
+
+double total = carrito.stream()
+        .mapToDouble(CarritoDTO::getSubtotal)
+        .sum();   
+System.out.println("💰 Total calculado: " + total);
         // 1. Creamos y guardamos el pedido localmente
         Pedido pedido = new Pedido();
         pedido.setClienteId(dto.getClienteId());
-        pedido.setMontoTotal(dto.getMontoTotal());
+      //  pedido.setMontoTotal(dto.getMontoTotal());
+        pedido.setMontoTotal(total);
         pedido.setDireccionEnvio(dto.getDireccionEnvio());
         pedido.setEstado(EstadoPedido.ESPERANDO_PAGO); 
         
