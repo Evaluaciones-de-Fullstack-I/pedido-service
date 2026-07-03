@@ -5,6 +5,13 @@ import cl.duoc.pedidos.dto.PedidoResponseDTO;
 import cl.duoc.pedidos.model.EstadoPedido;
 import cl.duoc.pedidos.model.Pedido;
 import cl.duoc.pedidos.repository.PedidoRepository;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.parameters.RequestBody;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -12,7 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
 
-import java.time.LocalDate; // NUEVO IMPORT PARA LAS FECHAS DE ELI
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +28,7 @@ import cl.duoc.pedidos.dto.CarritoDTO;
 
 @RestController
 @RequestMapping("/api/pedidos")
+@Tag(name = "Pedidos", description = "Controlador principal del flujo de checkout. Coordina la recolección del carrito, cobro automático y despacho mediante WebClient")
 public class PedidoController {
 
     @Autowired
@@ -29,39 +37,66 @@ public class PedidoController {
     @Autowired
     private WebClient.Builder webClientBuilder;
 
-    // Generar la orden de compra, cobrar y despachar
     @PostMapping
-    public ResponseEntity<PedidoResponseDTO> crearPedido(@Valid @RequestBody PedidoRequestDTO dto) {
+    @Operation(
+        summary = "Generar un nuevo pedido (Checkout)",
+        description = "Consulta el carrito de compras del cliente (puerto 8086), calcula el total, crea la orden de compra local, procesa síncronamente el cobro en el MS Pagos (puerto 8088) y agenda el envío en el MS Delivery (puerto 8084).",
+        responses = {
+            @ApiResponse(
+                responseCode = "201", 
+                description = "Pedido generado, pagado y enviado a reparto exitosamente"
+            ),
+            @ApiResponse(
+                responseCode = "400", 
+                description = "Parámetros de entrada incorrectos"
+            ),
+            @ApiResponse(
+                responseCode = "500", 
+                description = "Error interno o carrito vacío al intentar procesar la transacción"
+            )
+        }
+    )
+    public ResponseEntity<PedidoResponseDTO> crearPedido(
+            @Valid @RequestBody(
+                description = "Estructura JSON con los datos del cliente y la dirección de despacho requeridos para el checkout",
+                required = true,
+                content = @Content(
+                    mediaType = "application/json",
+                    schema = @Schema(implementation = PedidoRequestDTO.class),
+                    examples = @ExampleObject(
+                        name = "Ejemplo de Checkout de Pedido",
+                        value = "{\n  \"clienteId\": 45,\n  \"direccionEnvio\": \"Av. Concha y Toro 1340, Puente Alto\"\n}"
+                    )
+                )
+            )
+            @org.springframework.web.bind.annotation.RequestBody PedidoRequestDTO dto) {
         
-     List<CarritoDTO> carrito = webClientBuilder.build().get()
-        .uri("http://localhost:8086/api/v1/carritos/cliente/" + dto.getClienteId())
-        .retrieve()
-        .bodyToFlux(CarritoDTO.class)
-        .collectList()
-        .block();
-System.out.println("🛒 Carrito obtenido: " + carrito.size() + " productos");
+        List<CarritoDTO> carrito = webClientBuilder.build().get()
+            .uri("http://localhost:8086/api/v1/carritos/cliente/" + dto.getClienteId())
+            .retrieve()
+            .bodyToFlux(CarritoDTO.class)
+            .collectList()
+            .block();
+        System.out.println("🛒 Carrito obtenido: " + (carrito != null ? carrito.size() : 0) + " productos");
 
-if (carrito == null || carrito.isEmpty()) {
-   
-    throw new RuntimeException("El carrito está vacío");
-}
-System.out.println("✔ Carrito válido con " + carrito.size() + " productos");
+        if (carrito == null || carrito.isEmpty()) {
+            throw new RuntimeException("El carrito está vacío");
+        }
+        System.out.println("✔ Carrito válido con " + carrito.size() + " productos");
 
-double total = carrito.stream()
-        .mapToDouble(CarritoDTO::getSubtotal)
-        .sum();   
-System.out.println("💰 Total calculado: " + total);
-        // 1. Creamos y guardamos el pedido localmente
+        double total = carrito.stream()
+                .mapToDouble(CarritoDTO::getSubtotal)
+                .sum();   
+        System.out.println("💰 Total calculado: " + total);
+
         Pedido pedido = new Pedido();
         pedido.setClienteId(dto.getClienteId());
-      //  pedido.setMontoTotal(dto.getMontoTotal());
         pedido.setMontoTotal(total);
         pedido.setDireccionEnvio(dto.getDireccionEnvio());
         pedido.setEstado(EstadoPedido.ESPERANDO_PAGO); 
         
         Pedido guardado = pedidoRepository.save(pedido);
 
-        // 2. CONEXIÓN AUTOMÁTICA CON MICROSERVICIO DE PAGOS
         boolean pagoExitoso = false;
         try {
             Map<String, Object> pagoRequest = new HashMap<>();
@@ -77,21 +112,19 @@ System.out.println("💰 Total calculado: " + total);
                     .block();
 
             System.out.println("💳 [CONEXIÓN] Pedido ID " + guardado.getId() + " enviado exitosamente a MS Pagos.");
-            pagoExitoso = true; // El pago pasó, podemos despachar
+            pagoExitoso = true; 
             
         } catch (Exception e) {
             System.out.println("❌ [ERROR] No se pudo enviar el cobro a Pagos: " + e.getMessage());
         }
 
-        // 3. CONEXIÓN AUTOMÁTICA CON MICROSERVICIO DE DELIVERY (Solo si se pagó)
         if (pagoExitoso) {
             try {
-                // Armamos los datos EXACTOS que Eli pide en su CreateRequestDelivery record
                 Map<String, Object> deliveryRequest = new HashMap<>();
-                deliveryRequest.put("pedidoId", guardado.getId().intValue()); // Convertimos a Integer por si acaso
+                deliveryRequest.put("pedidoId", guardado.getId().intValue()); 
                 deliveryRequest.put("nombreRepartidor", "Por Asignar");
                 deliveryRequest.put("direccionEntrega", guardado.getDireccionEnvio());
-                deliveryRequest.put("fechaDespacho", LocalDate.now().toString()); // ISO-8601 String que Jackson entiende perfecto
+                deliveryRequest.put("fechaDespacho", LocalDate.now().toString()); 
                 deliveryRequest.put("fechaEntrega", LocalDate.now().plusDays(1).toString());
 
                 webClientBuilder.build().post()
@@ -103,7 +136,6 @@ System.out.println("💰 Total calculado: " + total);
 
                 System.out.println("🚚 [CONEXIÓN] Pedido ID " + guardado.getId() + " enviado a MS Delivery para despacho.");
                 
-                // Actualizamos el estado de nuestro pedido a PAGADO ya que todo salió bien
                 guardado.setEstado(EstadoPedido.PAGADO);
                 pedidoRepository.save(guardado);
                 
@@ -115,8 +147,17 @@ System.out.println("💰 Total calculado: " + total);
         return new ResponseEntity<>(convertirADto(guardado), HttpStatus.CREATED);
     }
 
-    // Consultar pedidos de un cliente
     @GetMapping("/cliente/{clienteId}")
+    @Operation(
+        summary = "Consultar historial de pedidos de un cliente",
+        description = "Retorna el listado completo de todas las órdenes de compra efectuadas por un usuario específico.",
+        responses = {
+            @ApiResponse(
+                responseCode = "200", 
+                description = "Listado de pedidos devuelto con éxito"
+            )
+        }
+    )
     public ResponseEntity<List<PedidoResponseDTO>> obtenerPedidosCliente(@PathVariable Long clienteId) {
         List<Pedido> pedidos = pedidoRepository.findByClienteId(clienteId);
         List<PedidoResponseDTO> response = pedidos.stream()
@@ -125,8 +166,21 @@ System.out.println("💰 Total calculado: " + total);
         return ResponseEntity.ok(response);
     }
 
-    // Endpoint para que MS Pagos o MS Delivery actualicen el estado
     @PutMapping("/{id}/estado")
+    @Operation(
+        summary = "Actualizar el estado de un pedido",
+        description = "Modifica el estado logístico o financiero del pedido. Endpoint diseñado para ser invocado externamente por el MS de Pagos o el MS de Delivery.",
+        responses = {
+            @ApiResponse(
+                responseCode = "200", 
+                description = "Estado del pedido actualizado exitosamente"
+            ),
+            @ApiResponse(
+                responseCode = "404", 
+                description = "No se localizó un pedido con el ID entregado"
+            )
+        }
+    )
     public ResponseEntity<PedidoResponseDTO> actualizarEstadoPedido(
             @PathVariable Long id, 
             @RequestParam EstadoPedido nuevoEstado) {
