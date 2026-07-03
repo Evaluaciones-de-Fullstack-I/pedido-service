@@ -14,6 +14,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value; // 👈 Agregado para leer las URLs fijas
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -36,6 +37,16 @@ public class PedidoController {
 
     @Autowired
     private WebClient.Builder webClientBuilder;
+
+    // 🛰️ URLs de los microservicios externos (Configurables desde properties o Railway)
+    @Value("${url.carrito:http://localhost:8082}")
+    private String urlCarrito;
+
+    @Value("${url.pagos:http://localhost:8088}")
+    private String urlPagos;
+
+    @Value("${url.delivery:http://localhost:8084}")
+    private String urlDelivery;
 
     @PostMapping
     @Operation(
@@ -71,9 +82,9 @@ public class PedidoController {
             )
             @org.springframework.web.bind.annotation.RequestBody PedidoRequestDTO dto) {
         
-        // 1. Obtención dinámica del carrito usando Eureka
+        // 1. Obtención dinámica del carrito usando la variable urlCarrito
         List<CarritoDTO> carrito = webClientBuilder.build().get()
-            .uri("http://carrito-service/api/v1/carritos/cliente/" + dto.getClienteId())
+            .uri(urlCarrito + "/api/v1/carritos/cliente/" + dto.getClienteId())
             .retrieve()
             .bodyToFlux(CarritoDTO.class)
             .collectList()
@@ -105,9 +116,9 @@ public class PedidoController {
             pagoRequest.put("monto", guardado.getMontoTotal()); 
             pagoRequest.put("metodo", "TARJETA"); 
 
-            // 2. Enrutamiento dinámico al MS Pagos
+            // 2. Enrutamiento directo al MS Pagos usando urlPagos
             webClientBuilder.build().post()
-                    .uri("http://pagos-service/api/pagos/procesar")
+                    .uri(urlPagos + "/api/pagos/procesar")
                     .bodyValue(pagoRequest)
                     .retrieve()
                     .bodyToMono(Void.class)
@@ -129,9 +140,9 @@ public class PedidoController {
                 deliveryRequest.put("fechaDespacho", LocalDate.now().toString()); 
                 deliveryRequest.put("fechaEntrega", LocalDate.now().plusDays(1).toString());
 
-                // 3. Enrutamiento dinámico al MS Delivery
+                // 3. Enrutamiento directo al MS Delivery usando urlDelivery
                 webClientBuilder.build().post()
-                        .uri("http://delivery-service/api/v1/delivery")
+                        .uri(urlDelivery + "/api/v1/delivery")
                         .bodyValue(deliveryRequest)
                         .retrieve()
                         .bodyToMono(Void.class)
