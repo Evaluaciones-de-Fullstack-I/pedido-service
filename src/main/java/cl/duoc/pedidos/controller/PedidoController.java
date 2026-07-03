@@ -40,7 +40,7 @@ public class PedidoController {
     @PostMapping
     @Operation(
         summary = "Generar un nuevo pedido (Checkout)",
-        description = "Consulta el carrito de compras del cliente (puerto 8086), calcula el total, crea la orden de compra local, procesa síncronamente el cobro en el MS Pagos (puerto 8088) y agenda el envío en el MS Delivery (puerto 8084).",
+        description = "Consulta el carrito de compras del cliente dinámicamente, calcula el total, crea la orden de compra local, procesa síncronamente el cobro en el MS Pagos y agenda el envío en el MS Delivery.",
         responses = {
             @ApiResponse(
                 responseCode = "201", 
@@ -71,8 +71,9 @@ public class PedidoController {
             )
             @org.springframework.web.bind.annotation.RequestBody PedidoRequestDTO dto) {
         
+        // 1. Obtención dinámica del carrito usando Eureka
         List<CarritoDTO> carrito = webClientBuilder.build().get()
-            .uri("http://localhost:8086/api/v1/carritos/cliente/" + dto.getClienteId())
+            .uri("http://carrito-service/api/v1/carritos/cliente/" + dto.getClienteId())
             .retrieve()
             .bodyToFlux(CarritoDTO.class)
             .collectList()
@@ -104,8 +105,9 @@ public class PedidoController {
             pagoRequest.put("monto", guardado.getMontoTotal()); 
             pagoRequest.put("metodo", "TARJETA"); 
 
+            // 2. Enrutamiento dinámico al MS Pagos
             webClientBuilder.build().post()
-                    .uri("http://localhost:8088/api/pagos/procesar")
+                    .uri("http://pagos-service/api/pagos/procesar")
                     .bodyValue(pagoRequest)
                     .retrieve()
                     .bodyToMono(Void.class)
@@ -127,8 +129,9 @@ public class PedidoController {
                 deliveryRequest.put("fechaDespacho", LocalDate.now().toString()); 
                 deliveryRequest.put("fechaEntrega", LocalDate.now().plusDays(1).toString());
 
+                // 3. Enrutamiento dinámico al MS Delivery
                 webClientBuilder.build().post()
-                        .uri("http://localhost:8084/api/v1/delivery")
+                        .uri("http://delivery-service/api/v1/delivery")
                         .bodyValue(deliveryRequest)
                         .retrieve()
                         .bodyToMono(Void.class)
