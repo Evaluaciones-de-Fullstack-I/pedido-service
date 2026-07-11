@@ -1,17 +1,17 @@
-# Etapa 1: Compilar con Maven y Java 17
-FROM eclipse-temurin:17-jdk-alpine as build
+# Paso 1: Compilar la aplicación usando Maven
+FROM maven:3.8.8-eclipse-temurin-17 AS build
 WORKDIR /app
-COPY mvnw .
-COPY .mvn .mvn
 COPY pom.xml .
-RUN chmod +x ./mvnw
-RUN ./mvnw dependency:go-offline -B
-COPY src src
-RUN ./mvnw package -DskipTests
+COPY src ./src
+RUN mvn clean package -DskipTests
 
-# Etapa 2: Ejecutar en servidor limpio
-FROM eclipse-temurin:17-jre-alpine
+# Paso 2: Crear la imagen final ligera para ejecutar la aplicación
+FROM eclipse-temurin:17-jre-jammy
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
-EXPOSE 8087
+
+# Exponer el puerto genérico (Render asignará el real internamente a través de $PORT)
+EXPOSE 8080
+
+# Comando para arrancar el microservicio
 ENTRYPOINT ["java", "-jar", "app.jar"]
