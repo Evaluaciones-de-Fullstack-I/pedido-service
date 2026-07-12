@@ -39,9 +39,9 @@ public class PedidoController {
     private WebClient.Builder webClientBuilder;
 
     // 🛰️ URLs de los microservicios externos (Configurables desde properties o Railway)
-    @Value("${url.carrito:http://localhost:8082}")
-    private String urlCarrito;
-
+ //   @Value("${url.carrito:http://localhost:8082}")
+   // private String urlCarrito;
+private String urlCarrito = "https://pedido-service-3net.onrender.com";
     @Value("${url.pagos:http://localhost:8088}")
     private String urlPagos;
 
